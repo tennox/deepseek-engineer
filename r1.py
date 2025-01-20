@@ -124,6 +124,12 @@ def create_file(path: str, content: str):
         f.write(content)
     console.print(f"[green]✓[/green] Created/updated file at '[cyan]{file_path}[/cyan]'")
     
+    # Record the action as a system message
+    conversation_history.append({
+        "role": "system",
+        "content": f"File operation: Created/updated file at '{file_path}'"
+    })
+    
     normalized_path = normalize_path(str(file_path))
     conversation_history.append({
         "role": "system",
@@ -152,6 +158,11 @@ def apply_diff_edit(path: str, original_snippet: str, new_snippet: str):
             updated_content = content.replace(original_snippet, new_snippet, 1)
             create_file(path, updated_content)
             console.print(f"[green]✓[/green] Applied diff edit to '[cyan]{path}[/cyan]'")
+            # Record the edit as a system message
+            conversation_history.append({
+                "role": "system",
+                "content": f"File operation: Applied diff edit to '{path}'"
+            })
         else:
             console.print(f"[yellow]⚠[/yellow] Original snippet not found in '[cyan]{path}[/cyan]'. No changes made.", style="yellow")
             console.print("\nExpected snippet:", style="yellow")
