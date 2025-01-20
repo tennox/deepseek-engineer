@@ -124,12 +124,6 @@ def create_file(path: str, content: str):
         f.write(content)
     console.print(f"[green]✓[/green] Created/updated file at '[cyan]{file_path}[/cyan]'")
     
-    # Record the action
-    conversation_history.append({
-        "role": "assistant",
-        "content": f"✓ Created/updated file at '{file_path}'"
-    })
-    
     normalized_path = normalize_path(str(file_path))
     conversation_history.append({
         "role": "system",
@@ -158,10 +152,6 @@ def apply_diff_edit(path: str, original_snippet: str, new_snippet: str):
             updated_content = content.replace(original_snippet, new_snippet, 1)
             create_file(path, updated_content)
             console.print(f"[green]✓[/green] Applied diff edit to '[cyan]{path}[/cyan]'")
-            conversation_history.append({
-                "role": "assistant",
-                "content": f"✓ Applied diff edit to '{path}'"
-            })
         else:
             console.print(f"[yellow]⚠[/yellow] Original snippet not found in '[cyan]{path}[/cyan]'. No changes made.", style="yellow")
             console.print("\nExpected snippet:", style="yellow")
@@ -231,6 +221,28 @@ def guess_files_in_message(user_message: str) -> List[str]:
     return potential_paths
 
 def stream_openai_response(user_message: str):
+    # First, clean up the conversation history
+    cleaned_history = [conversation_history[0]]  # Keep initial system prompt
+    user_assistant_pairs = []
+    
+    for i in range(1, len(conversation_history)):
+        msg = conversation_history[i]
+        if msg["role"] in ["user", "assistant"]:
+            user_assistant_pairs.append(msg)
+    
+    # Only keep complete user-assistant pairs
+    if len(user_assistant_pairs) % 2 == 0:
+        cleaned_history.extend(user_assistant_pairs)
+    else:
+        cleaned_history.extend(user_assistant_pairs[:-1])
+
+    # Add the new user message
+    cleaned_history.append({"role": "user", "content": user_message})
+    
+    # Update the conversation history to be clean
+    conversation_history.clear()
+    conversation_history.extend(cleaned_history)
+
     potential_paths = guess_files_in_message(user_message)
     valid_files = {}
 
@@ -248,8 +260,6 @@ def stream_openai_response(user_message: str):
             error_msg = f"Cannot proceed: File '{path}' does not exist or is not accessible"
             console.print(f"[red]✗[/red] {error_msg}", style="red")
             continue
-
-    conversation_history.append({"role": "user", "content": user_message})
 
     try:
         stream = client.chat.completions.create(
@@ -298,9 +308,10 @@ def stream_openai_response(user_message: str):
 
             response_obj = AssistantResponse(**parsed_response)
 
+            # Store the complete JSON response in conversation history
             conversation_history.append({
                 "role": "assistant",
-                "content": response_obj.assistant_reply
+                "content": final_content  # Store the full JSON response string
             })
 
             return response_obj
