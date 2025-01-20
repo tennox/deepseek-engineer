@@ -61,5 +61,14 @@ This repository contains a powerful coding assistant application that integrates
 
 3. Enjoy multi-line streaming responses, file read-ins with "/add path/to/file", and precise file edits when approved.
 
+### Reasoning-Enabled Version (r1.py)
+A new script `r1.py` has been added that uses DeepSeek's Reasoning Model (`deepseek-reasoner`). This version includes Chain of Thought (CoT) reasoning capabilities:
+
+- Shows the AI's reasoning process before providing the final answer
+- Maintains all original features (file operations, diff editing, etc.)
+- Displays thought process in a dedicated panel
+- Only uses final conclusions in conversation history
+- Run it with `python3 r1.py` or `uv run r1.py` for an enhanced experience with visible reasoning
+
 > **Note**: This is an experimental project developed by Skirano to test the new DeepSeek v3 API capabilities. It was developed as a rapid prototype and should be used accordingly.
 
