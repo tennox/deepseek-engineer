@@ -119,7 +119,15 @@ def read_local_file(file_path: str) -> str:
 def create_file(path: str, content: str):
     """Create (or overwrite) a file at 'path' with the given 'content'."""
     file_path = Path(path)
-    file_path.parent.mkdir(parents=True, exist_ok=True)  # ensures any dirs exist
+    
+    # Security check
+    normalized_path = normalize_path(str(file_path))
+    
+    # Validate reasonable file size for operations
+    if len(content) > 5_000_000:  # 5MB limit
+        raise ValueError("File content exceeds 5MB size limit")
+    
+    file_path.parent.mkdir(parents=True, exist_ok=True)
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(content)
     console.print(f"[green]✓[/green] Created/updated file at '[cyan]{file_path}[/cyan]'")
@@ -154,23 +162,30 @@ def apply_diff_edit(path: str, original_snippet: str, new_snippet: str):
     """Reads the file at 'path', replaces the first occurrence of 'original_snippet' with 'new_snippet', then overwrites."""
     try:
         content = read_local_file(path)
-        if original_snippet in content:
-            updated_content = content.replace(original_snippet, new_snippet, 1)
-            create_file(path, updated_content)
-            console.print(f"[green]✓[/green] Applied diff edit to '[cyan]{path}[/cyan]'")
-            # Record the edit as a system message
-            conversation_history.append({
-                "role": "system",
-                "content": f"File operation: Applied diff edit to '{path}'"
-            })
-        else:
-            console.print(f"[yellow]⚠[/yellow] Original snippet not found in '[cyan]{path}[/cyan]'. No changes made.", style="yellow")
-            console.print("\nExpected snippet:", style="yellow")
-            console.print(Panel(original_snippet, title="Expected", border_style="yellow"))
-            console.print("\nActual file content:", style="yellow")
-            console.print(Panel(content, title="Actual", border_style="yellow"))
+        
+        # Verify we're replacing the exact intended occurrence
+        occurrences = content.count(original_snippet)
+        if occurrences == 0:
+            raise ValueError("Original snippet not found")
+        if occurrences > 1:
+            raise ValueError(f"Multiple occurrences ({occurrences}) found - ambiguous edit")
+        
+        updated_content = content.replace(original_snippet, new_snippet, 1)
+        create_file(path, updated_content)
+        console.print(f"[green]✓[/green] Applied diff edit to '[cyan]{path}[/cyan]'")
+        # Record the edit as a system message
+        conversation_history.append({
+            "role": "system",
+            "content": f"File operation: Applied diff edit to '{path}'"
+        })
     except FileNotFoundError:
         console.print(f"[red]✗[/red] File not found for diff editing: '[cyan]{path}[/cyan]'", style="red")
+    except ValueError as e:
+        console.print(f"[yellow]⚠[/yellow] {str(e)} in '[cyan]{path}[/cyan]'. No changes made.", style="yellow")
+        console.print("\nExpected snippet:", style="yellow")
+        console.print(Panel(original_snippet, title="Expected", border_style="yellow"))
+        console.print("\nActual file content:", style="yellow")
+        console.print(Panel(content, title="Actual", border_style="yellow"))
 
 def try_handle_add_command(user_input: str) -> bool:
     prefix = "/add "
@@ -178,11 +193,17 @@ def try_handle_add_command(user_input: str) -> bool:
         file_path = user_input[len(prefix):].strip()
         try:
             content = read_local_file(file_path)
+            normalized_path = normalize_path(file_path)
             conversation_history.append({
                 "role": "system",
-                "content": f"Content of file '{file_path}':\n\n{content}"
+                "content": f"Content of file '{normalized_path}':\n\n{content}"
             })
-            console.print(f"[green]✓[/green] Added file '[cyan]{file_path}[/cyan]' to conversation.\n")
+            console.print(f"[green]✓[/green] Added file '[cyan]{normalized_path}[/cyan]' to conversation.\n")
+            
+            # Debug print to verify files in context
+            file_msgs = [msg for msg in conversation_history if 
+                         msg["role"] == "system" and "Content of file '" in msg["content"]]
+            # console.print(f"[dim]Debug: {len(file_msgs)} files in context.[/dim]")
         except OSError as e:
             console.print(f"[red]✗[/red] Could not add file '[cyan]{file_path}[/cyan]': {e}\n", style="red")
         return True
@@ -204,8 +225,14 @@ def ensure_file_in_context(file_path: str) -> bool:
         return False
 
 def normalize_path(path_str: str) -> str:
-    """Return a canonical, absolute version of the path."""
-    return str(Path(path_str).resolve())
+    """Return a canonical, absolute version of the path with security checks."""
+    path = Path(path_str).resolve()
+    
+    # Prevent directory traversal attacks
+    if ".." in path.parts:
+        raise ValueError(f"Invalid path: {path_str} contains parent directory references")
+    
+    return str(path)
 
 # --------------------------------------------------------------------------------
 # 5. Conversation state
@@ -232,25 +259,27 @@ def guess_files_in_message(user_message: str) -> List[str]:
     return potential_paths
 
 def stream_openai_response(user_message: str):
-    # First, clean up the conversation history
-    cleaned_history = [conversation_history[0]]  # Keep initial system prompt
+    # First, clean up the conversation history while preserving system messages with file content
+    system_msgs = [conversation_history[0]]  # Keep initial system prompt
+    file_context = []
     user_assistant_pairs = []
     
-    for i in range(1, len(conversation_history)):
-        msg = conversation_history[i]
-        if msg["role"] in ["user", "assistant"]:
+    for msg in conversation_history[1:]:
+        if msg["role"] == "system" and "Content of file '" in msg["content"]:
+            file_context.append(msg)
+        elif msg["role"] in ["user", "assistant"]:
             user_assistant_pairs.append(msg)
     
     # Only keep complete user-assistant pairs
-    if len(user_assistant_pairs) % 2 == 0:
-        cleaned_history.extend(user_assistant_pairs)
-    else:
-        cleaned_history.extend(user_assistant_pairs[:-1])
+    if len(user_assistant_pairs) % 2 != 0:
+        user_assistant_pairs = user_assistant_pairs[:-1]
 
-    # Add the new user message
+    # Rebuild clean history with files preserved
+    cleaned_history = system_msgs + file_context
+    cleaned_history.extend(user_assistant_pairs)
     cleaned_history.append({"role": "user", "content": user_message})
     
-    # Update the conversation history to be clean
+    # Replace conversation_history with cleaned version
     conversation_history.clear()
     conversation_history.extend(cleaned_history)
 
