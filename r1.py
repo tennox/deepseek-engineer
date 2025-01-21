@@ -121,7 +121,9 @@ def create_file(path: str, content: str):
     """Create (or overwrite) a file at 'path' with the given 'content'."""
     file_path = Path(path)
     
-    # Security check
+    # Security checks
+    if any(part.startswith('~') for part in file_path.parts):
+        raise ValueError("Home directory references not allowed")
     normalized_path = normalize_path(str(file_path))
     
     # Validate reasonable file size for operations
@@ -169,7 +171,9 @@ def apply_diff_edit(path: str, original_snippet: str, new_snippet: str):
         if occurrences == 0:
             raise ValueError("Original snippet not found")
         if occurrences > 1:
-            raise ValueError(f"Multiple occurrences ({occurrences}) found - ambiguous edit")
+            console.print(f"[yellow]Multiple matches ({occurrences}) found - requiring line numbers for safety", style="yellow")
+            console.print("Use format:\n--- original.py (lines X-Y)\n+++ modified.py\n")
+            raise ValueError(f"Ambiguous edit: {occurrences} matches")
         
         updated_content = content.replace(original_snippet, new_snippet, 1)
         create_file(path, updated_content)
@@ -191,24 +195,80 @@ def apply_diff_edit(path: str, original_snippet: str, new_snippet: str):
 def try_handle_add_command(user_input: str) -> bool:
     prefix = "/add "
     if user_input.strip().lower().startswith(prefix):
-        file_path = user_input[len(prefix):].strip()
+        path_to_add = user_input[len(prefix):].strip()
         try:
-            content = read_local_file(file_path)
-            normalized_path = normalize_path(file_path)
-            conversation_history.append({
-                "role": "system",
-                "content": f"Content of file '{normalized_path}':\n\n{content}"
-            })
-            console.print(f"[green]✓[/green] Added file '[cyan]{normalized_path}[/cyan]' to conversation.\n")
-            
-            # Debug print to verify files in context
-            file_msgs = [msg for msg in conversation_history if 
-                         msg["role"] == "system" and "Content of file '" in msg["content"]]
-            # console.print(f"[dim]Debug: {len(file_msgs)} files in context.[/dim]")
+            normalized_path = normalize_path(path_to_add)
+            if os.path.isdir(normalized_path):
+                # Handle entire directory
+                add_directory_to_conversation(normalized_path)
+            else:
+                # Handle a single file as before
+                content = read_local_file(normalized_path)
+                conversation_history.append({
+                    "role": "system",
+                    "content": f"Content of file '{normalized_path}':\n\n{content}"
+                })
+                console.print(f"[green]✓[/green] Added file '[cyan]{normalized_path}[/cyan]' to conversation.\n")
         except OSError as e:
-            console.print(f"[red]✗[/red] Could not add file '[cyan]{file_path}[/cyan]': {e}\n", style="red")
+            console.print(f"[red]✗[/red] Could not add path '[cyan]{path_to_add}[/cyan]': {e}\n", style="red")
         return True
     return False
+
+def add_directory_to_conversation(directory_path: str):
+    excluded_files = {".DS_Store", "Thumbs.db"}
+    excluded_extensions = {".png", ".jpg", ".jpeg", ".gif", ".zip", ".exe", ".dll", ".so", ".bin", ".pdf", ".doc", ".docx", ".xls", ".xlsx"}
+    skipped_files = []
+    added_files = []
+
+    for root, dirs, files in os.walk(directory_path):
+        # Skip hidden directories
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        for file in files:
+            if file.startswith('.') or file in excluded_files:
+                skipped_files.append(os.path.join(root, file))
+                continue
+            _, ext = os.path.splitext(file)
+            if ext.lower() in excluded_extensions:
+                skipped_files.append(os.path.join(root, file))
+                continue
+            full_path = os.path.join(root, file)
+            # Check if it's binary
+            if is_binary_file(full_path):
+                skipped_files.append(full_path)
+                continue
+            try:
+                normalized_path = normalize_path(full_path)
+                content = read_local_file(normalized_path)
+                conversation_history.append({
+                    "role": "system",
+                    "content": f"Content of file '{normalized_path}':\n\n{content}"
+                })
+                added_files.append(normalized_path)
+            except OSError:
+                skipped_files.append(full_path)
+
+    console.print(f"[green]✓[/green] Added folder '[cyan]{directory_path}[/cyan]' to conversation.")
+    if added_files:
+        console.print("\n[bold]Added files:[/bold]")
+        for f in added_files:
+            console.print(f"[cyan]{f}[/cyan]")
+    if skipped_files:
+        console.print("\n[yellow]Skipped files:[/yellow]")
+        for f in skipped_files:
+            console.print(f"[yellow]{f}[/yellow]")
+    console.print()
+
+def is_binary_file(file_path: str, peek_size: int = 1024) -> bool:
+    try:
+        with open(file_path, 'rb') as f:
+            chunk = f.read(peek_size)
+        # If there is a null byte in the sample, treat it as binary
+        if b'\0' in chunk:
+            return True
+        return False
+    except Exception:
+        # If we fail to read, just treat it as binary to be safe
+        return True
 
 def ensure_file_in_context(file_path: str) -> bool:
     try:
@@ -387,7 +447,10 @@ def main():
         border_style="blue"
     ))
     console.print(
-        "To include a file in the conversation, use '[bold magenta]/add path/to/file[/bold magenta]'.\n"
+        "Use '[bold magenta]/add[/bold magenta]' to include files in the conversation:\n"
+        "  • '[bold magenta]/add path/to/file[/bold magenta]' for a single file\n"
+        "  • '[bold magenta]/add path/to/folder[/bold magenta]' for all files in a folder\n"
+        "  • You can add multiple files one by one using /add for each file\n"
         "Type '[bold red]exit[/bold red]' or '[bold red]quit[/bold red]' to end.\n"
     )
 
