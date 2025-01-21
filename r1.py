@@ -215,48 +215,110 @@ def try_handle_add_command(user_input: str) -> bool:
     return False
 
 def add_directory_to_conversation(directory_path: str):
-    excluded_files = {".DS_Store", "Thumbs.db"}
-    excluded_extensions = {".png", ".jpg", ".jpeg", ".gif", ".zip", ".exe", ".dll", ".so", ".bin", ".pdf", ".doc", ".docx", ".xls", ".xlsx"}
-    skipped_files = []
-    added_files = []
+    with console.status("[bold green]Scanning directory...") as status:
+        excluded_files = {
+            # Python specific
+            ".DS_Store", "Thumbs.db", ".gitignore", ".python-version",
+            "uv.lock", ".uv", "uvenv", ".uvenv", ".venv", "venv",
+            "__pycache__", ".pytest_cache", ".coverage", ".mypy_cache",
+            # Node.js / Web specific
+            "node_modules", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+            ".next", ".nuxt", "dist", "build", ".cache", ".parcel-cache",
+            ".turbo", ".vercel", ".output", ".contentlayer",
+            # Build outputs
+            "out", "coverage", ".nyc_output", "storybook-static",
+            # Environment and config
+            ".env", ".env.local", ".env.development", ".env.production",
+            # Misc
+            ".git", ".svn", ".hg", "CVS"
+        }
+        excluded_extensions = {
+            # Binary and media files
+            ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".webp", ".avif",
+            ".mp4", ".webm", ".mov", ".mp3", ".wav", ".ogg",
+            ".zip", ".tar", ".gz", ".7z", ".rar",
+            ".exe", ".dll", ".so", ".dylib", ".bin",
+            # Documents
+            ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+            # Python specific
+            ".pyc", ".pyo", ".pyd", ".egg", ".whl",
+            # UV specific
+            ".uv", ".uvenv",
+            # Database and logs
+            ".db", ".sqlite", ".sqlite3", ".log",
+            # IDE specific
+            ".idea", ".vscode",
+            # Web specific
+            ".map", ".chunk.js", ".chunk.css",
+            ".min.js", ".min.css", ".bundle.js", ".bundle.css",
+            # Cache and temp files
+            ".cache", ".tmp", ".temp",
+            # Font files
+            ".ttf", ".otf", ".woff", ".woff2", ".eot"
+        }
+        skipped_files = []
+        added_files = []
+        total_files_processed = 0
+        max_files = 1000  # Reasonable limit for files to process
+        max_file_size = 5_000_000  # 5MB limit
 
-    for root, dirs, files in os.walk(directory_path):
-        # Skip hidden directories
-        dirs[:] = [d for d in dirs if not d.startswith('.')]
-        for file in files:
-            if file.startswith('.') or file in excluded_files:
-                skipped_files.append(os.path.join(root, file))
-                continue
-            _, ext = os.path.splitext(file)
-            if ext.lower() in excluded_extensions:
-                skipped_files.append(os.path.join(root, file))
-                continue
-            full_path = os.path.join(root, file)
-            # Check if it's binary
-            if is_binary_file(full_path):
-                skipped_files.append(full_path)
-                continue
-            try:
-                normalized_path = normalize_path(full_path)
-                content = read_local_file(normalized_path)
-                conversation_history.append({
-                    "role": "system",
-                    "content": f"Content of file '{normalized_path}':\n\n{content}"
-                })
-                added_files.append(normalized_path)
-            except OSError:
-                skipped_files.append(full_path)
+        for root, dirs, files in os.walk(directory_path):
+            if total_files_processed >= max_files:
+                console.print(f"[yellow]⚠[/yellow] Reached maximum file limit ({max_files})")
+                break
 
-    console.print(f"[green]✓[/green] Added folder '[cyan]{directory_path}[/cyan]' to conversation.")
-    if added_files:
-        console.print("\n[bold]Added files:[/bold]")
-        for f in added_files:
-            console.print(f"[cyan]{f}[/cyan]")
-    if skipped_files:
-        console.print("\n[yellow]Skipped files:[/yellow]")
-        for f in skipped_files:
-            console.print(f"[yellow]{f}[/yellow]")
-    console.print()
+            status.update(f"[bold green]Scanning {root}...")
+            # Skip hidden directories and excluded directories
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in excluded_files]
+
+            for file in files:
+                if total_files_processed >= max_files:
+                    break
+
+                if file.startswith('.') or file in excluded_files:
+                    skipped_files.append(os.path.join(root, file))
+                    continue
+
+                _, ext = os.path.splitext(file)
+                if ext.lower() in excluded_extensions:
+                    skipped_files.append(os.path.join(root, file))
+                    continue
+
+                full_path = os.path.join(root, file)
+
+                try:
+                    # Check file size before processing
+                    if os.path.getsize(full_path) > max_file_size:
+                        skipped_files.append(f"{full_path} (exceeds size limit)")
+                        continue
+
+                    # Check if it's binary
+                    if is_binary_file(full_path):
+                        skipped_files.append(full_path)
+                        continue
+
+                    normalized_path = normalize_path(full_path)
+                    content = read_local_file(normalized_path)
+                    conversation_history.append({
+                        "role": "system",
+                        "content": f"Content of file '{normalized_path}':\n\n{content}"
+                    })
+                    added_files.append(normalized_path)
+                    total_files_processed += 1
+
+                except OSError:
+                    skipped_files.append(full_path)
+
+        console.print(f"[green]✓[/green] Added folder '[cyan]{directory_path}[/cyan]' to conversation.")
+        if added_files:
+            console.print(f"\n[bold]Added files:[/bold] ({len(added_files)} of {total_files_processed})")
+            for f in added_files:
+                console.print(f"[cyan]{f}[/cyan]")
+        if skipped_files:
+            console.print(f"\n[yellow]Skipped files:[/yellow] ({len(skipped_files)})")
+            for f in skipped_files:
+                console.print(f"[yellow]{f}[/yellow]")
+        console.print()
 
 def is_binary_file(file_path: str, peek_size: int = 1024) -> bool:
     try:
@@ -436,6 +498,19 @@ def stream_openai_response(user_message: str):
             assistant_reply=error_msg,
             files_to_create=[]
         )
+
+def trim_conversation_history():
+    """Trim conversation history to prevent token limit issues"""
+    max_pairs = 10  # Adjust based on your needs
+    system_msgs = [msg for msg in conversation_history if msg["role"] == "system"]
+    other_msgs = [msg for msg in conversation_history if msg["role"] != "system"]
+    
+    # Keep only the last max_pairs of user-assistant interactions
+    if len(other_msgs) > max_pairs * 2:
+        other_msgs = other_msgs[-max_pairs * 2:]
+    
+    conversation_history.clear()
+    conversation_history.extend(system_msgs + other_msgs)
 
 # --------------------------------------------------------------------------------
 # 7. Main interactive loop
