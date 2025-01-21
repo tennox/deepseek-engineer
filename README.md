@@ -27,6 +27,7 @@ This repository contains a powerful coding assistant application that integrates
 
 5. "/add" Command
    - Users can type "/add path/to/file" to quickly read a file's content and insert it into the conversation as a system message.  
+   - Users can also type "/add path/to/folder" to add all files in a directory (excluding binaries and hidden files).
    - This allows the assistant to reference the file contents for further discussion, code generation, or diff proposals.  
 
 6. Conversation Flow
