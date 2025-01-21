@@ -13,9 +13,16 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.style import Style
+from prompt_toolkit import PromptSession
+from prompt_toolkit.styles import Style as PromptStyle
 
-# Initialize Rich console
+# Initialize Rich console and prompt session
 console = Console()
+prompt_session = PromptSession(
+    style=PromptStyle.from_dict({
+        'prompt': '#00aa00 bold',  # Green prompt
+    })
+)
 
 # --------------------------------------------------------------------------------
 # 1. Configure OpenAI client and load environment variables
@@ -531,7 +538,7 @@ def main():
 
     while True:
         try:
-            user_input = console.input("[bold green]You>[/bold green] ").strip()
+            user_input = prompt_session.prompt("You> ").strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[yellow]Exiting.[/yellow]")
             break
@@ -554,8 +561,8 @@ def main():
 
         if response_data.files_to_edit:
             show_diff_table(response_data.files_to_edit)
-            confirm = console.input(
-                "\nDo you want to apply these changes? ([green]y[/green]/[red]n[/red]): "
+            confirm = prompt_session.prompt(
+                "Do you want to apply these changes? (y/n): "
             ).strip().lower()
             if confirm == 'y':
                 for edit_info in response_data.files_to_edit:
