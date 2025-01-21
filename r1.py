@@ -310,18 +310,22 @@ def stream_openai_response(user_message: str):
         )
 
         console.print("\nThinking...", style="bold yellow")
+        reasoning_started = False
         reasoning_content = ""
         final_content = ""
 
         for chunk in stream:
             if chunk.choices[0].delta.reasoning_content:
+                if not reasoning_started:
+                    console.print("\nReasoning:", style="bold yellow")
+                    reasoning_started = True
+                console.print(chunk.choices[0].delta.reasoning_content, end="")
                 reasoning_content += chunk.choices[0].delta.reasoning_content
             elif chunk.choices[0].delta.content:
-                if not final_content:  # When we start getting content, show reasoning first
-                    if reasoning_content:
-                        console.print("\nReasoning:", style="bold yellow")
-                        console.print(Panel(reasoning_content, border_style="yellow"))
-                        console.print("\nAssistant> ", style="bold blue", end="")
+                if reasoning_started:
+                    console.print("\n")  # Add spacing after reasoning
+                    console.print("\nAssistant> ", style="bold blue", end="")
+                    reasoning_started = False  # Reset so we don't add extra spacing
                 final_content += chunk.choices[0].delta.content
                 console.print(chunk.choices[0].delta.content, end="")
 
