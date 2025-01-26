@@ -51,167 +51,72 @@ class AssistantResponse(BaseModel):
     files_to_edit: Optional[List[FileToEdit]] = None
 
 # --------------------------------------------------------------------------------
-# 3. system prompt  (NOW WITH PROJECT STRUCTURE)
+# 3. system prompt
 # --------------------------------------------------------------------------------
+system_PROMPT = dedent("""\
+    You are an elite software engineer called DeepSeek Engineer with decades of experience across all programming domains.
+    Your expertise spans system design, algorithms, testing, and best practices.
+    You provide thoughtful, well-structured solutions while explaining your reasoning.
 
-def get_project_structure(root_path: str = ".") -> str:
-    """Generates a project structure string, excluding specified files and folders."""
+    Core capabilities:
+    1. Code Analysis & Discussion
+       - Analyze code with expert-level insight
+       - Explain complex concepts clearly
+       - Suggest optimizations and best practices
+       - Debug issues with precision
 
-    def is_excluded(path: Path, root_len: int) -> bool:
-        """Checks if a path should be excluded, now with relative-path checks."""
-        relative_path = str(path.relative_to(root_path))
-        
-        # Exclude files that start with "."
-        if path.name.startswith('.'):
-            return True
+    2. File Operations:
+       a) Read existing files
+          - Access user-provided file contents for context
+          - Analyze multiple files to understand project structure
+       
+       b) Create new files
+          - Generate complete new files with proper structure
+          - Create complementary files (tests, configs, etc.)
+       
+       c) Edit existing files
+          - Make precise changes using diff-based editing
+          - Modify specific sections while preserving context
+          - Suggest refactoring improvements
 
-        excluded_files_and_folders = {
-            # Python specific
-            ".DS_Store", "Thumbs.db", ".gitignore", ".python-version",
-            "uv.lock", ".uv", "uvenv", ".uvenv", ".venv", "venv",
-            "__pycache__", ".pytest_cache", ".coverage", ".mypy_cache",
-            # Node.js / Web specific
-            "node_modules", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
-            ".next", ".nuxt", "dist", "build", ".cache", ".parcel-cache",
-            ".turbo", ".vercel", ".output", ".contentlayer",
-            # Build outputs
-            "out", "coverage", ".nyc_output", "storybook-static",
-            # Environment and config
-            ".env", ".env.local", ".env.development", ".env.production",
-            # Misc
-            ".git", ".svn", ".hg", "CVS"
+    Output Format:
+    You must provide responses in this JSON structure:
+    {
+      "assistant_reply": "Your main explanation or response",
+      "files_to_create": [
+        {
+          "path": "path/to/new/file",
+          "content": "complete file content"
         }
-        excluded_extensions = {
-            # Binary and media files
-            ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".webp", ".avif",
-            ".mp4", ".webm", ".mov", ".mp3", ".wav", ".ogg",
-            ".zip", ".tar", ".gz", ".7z", ".rar",
-            ".exe", ".dll", ".so", ".dylib", ".bin",
-            # Documents
-            ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-            # Python specific
-            ".pyc", ".pyo", ".pyd", ".egg", ".whl",
-            # UV specific
-            ".uv", ".uvenv",
-            # Database and logs
-            ".db", ".sqlite", ".sqlite3", ".log",
-            # IDE specific
-            ".idea", ".vscode",
-            # Web specific
-            ".map", ".chunk.js", ".chunk.css",
-            ".min.js", ".min.css", ".bundle.js", ".bundle.css",
-            # Cache and temp files
-            ".cache", ".tmp", ".temp",
-            # Font files
-            ".ttf", ".otf", ".woff", ".woff2", ".eot"
+      ],
+      "files_to_edit": [
+        {
+          "path": "path/to/existing/file",
+          "original_snippet": "exact code to be replaced",
+          "new_snippet": "new code to insert"
         }
-        
-        for part in relative_path.split(os.sep):
-            if part in excluded_files_and_folders:
-                return True
+      ]
+    }
 
-        if path.suffix.lower() in excluded_extensions:
-            return True
+    Guidelines:
+    1. YOU ONLY RETURN JSON, NO OTHER TEXT OR EXPLANATION OUTSIDE THE JSON!!!
+    2. For normal responses, use 'assistant_reply'
+    3. When creating files, include full content in 'files_to_create'
+    4. For editing files:
+       - Use 'files_to_edit' for precise changes
+       - Include enough context in original_snippet to locate the change
+       - Ensure new_snippet maintains proper indentation
+       - Prefer targeted edits over full file replacements
+    5. Always explain your changes and reasoning
+    6. Consider edge cases and potential impacts
+    7. Follow language-specific best practices
+    8. Suggest tests or validation steps when appropriate
 
-        return False
-
-
-    root_len = len(str(Path(root_path).resolve()))
-    structure = []
-
-    for path in Path(root_path).rglob("*"):
-        if not is_excluded(path, root_len):
-            relative_path = path.relative_to(root_path)
-            level = len(relative_path.parts) - 1
-            indent = "  " * level
-            if path.is_dir():
-                structure.append(f"{indent}📁 {relative_path.name}/")
-            else:
-                structure.append(f"{indent}📄 {relative_path.name}")
-    return "\n".join(structure)
-
-# --- Update the system prompt to include the project structure ---
-def generate_system_prompt(project_structure: str) -> str:
-    return dedent(f"""\
-        You are an elite software engineer called DeepSeek Engineer with decades of experience across all programming domains.
-        Your expertise spans system design, algorithms, testing, and best practices.
-        You provide thoughtful, well-structured solutions while explaining your reasoning.
-
-        Core capabilities:
-        1. Code Analysis & Discussion
-           - Analyze code with expert-level insight
-           - Explain complex concepts clearly
-           - Suggest optimizations and best practices
-           - Debug issues with precision
-
-        2. File Operations:
-           a) Read existing files
-              - Access user-provided file contents for context
-              - Analyze multiple files to understand project structure
-           
-           b) Create new files
-              - Generate complete new files with proper structure
-              - Create complementary files (tests, configs, etc.)
-           
-           c) Edit existing files
-              - Make precise changes using diff-based editing
-              - Modify specific sections while preserving context
-              - Suggest refactoring improvements
-
-        Output Format:
-        You must provide responses in this JSON structure:
-        {{
-          "assistant_reply": "Your main explanation or response",
-          "files_to_create": [
-            {{
-              "path": "path/to/new/file",
-              "content": "complete file content"
-            }}
-          ],
-          "files_to_edit": [
-            {{
-              "path": "path/to/existing/file",
-              "original_snippet": "exact code to be replaced",
-              "new_snippet": "new code to insert"
-            }}
-          ]
-        }}
-
-        Guidelines:
-        1. YOU ONLY RETURN JSON, NO OTHER TEXT OR EXPLANATION OUTSIDE THE JSON!!!
-        2. For normal responses, use 'assistant_reply'
-        3. When creating files, include full content in 'files_to_create'
-        4. For editing files:
-           - Use 'files_to_edit' for precise changes
-           - Include enough context in original_snippet to locate the change
-           - Ensure new_snippet maintains proper indentation
-           - Prefer targeted edits over full file replacements
-        5. Always explain your changes and reasoning
-        6. Consider edge cases and potential impacts
-        7. Follow language-specific best practices
-        8. Suggest tests or validation steps when appropriate
-
-        Current Project Structure:
-        ```
-        {project_structure}
-        ```
-        
-        You ALWAYS have access to this project structure and can refer to it when handling file operations.  
-        Use this information to understand the context of user requests and to intelligently determine where to create or modify files.
-
-        Remember: You're a senior engineer - be thorough, precise, and thoughtful in your solutions.
-    """)
-
-# Initialize conversation history with the project structure
-project_structure = get_project_structure()
-system_prompt = generate_system_prompt(project_structure)  # Generate the *dynamic* prompt
-conversation_history = [
-    {"role": "system", "content": system_prompt}
-]
-
+    Remember: You're a senior engineer - be thorough, precise, and thoughtful in your solutions.
+""")
 
 # --------------------------------------------------------------------------------
-# 4. Helper functions
+# 4. Helper functions 
 # --------------------------------------------------------------------------------
 
 def read_local_file(file_path: str) -> str:
@@ -316,14 +221,6 @@ def try_handle_add_command(user_input: str) -> bool:
         return True
     return False
 
-# --- /scan command implementation ---
-def try_handle_scan_command(user_input: str) -> bool:
-    """Handles the /scan command to add the entire codebase."""
-    if user_input.strip().lower() == "/scan":
-        add_directory_to_conversation(".")  # Add the current working directory
-        return True
-    return False
-
 def add_directory_to_conversation(directory_path: str):
     with console.status("[bold green]Scanning directory...") as status:
         excluded_files = {
@@ -418,19 +315,6 @@ def add_directory_to_conversation(directory_path: str):
 
                 except OSError:
                     skipped_files.append(full_path)
-        # --- Update project structure and system prompt AFTER scanning ---
-        global project_structure, system_prompt  # Access the global variables
-        project_structure = get_project_structure()
-        system_prompt = generate_system_prompt(project_structure)
-        
-        # Find and replace the *old* system prompt with the *new* one.
-        for i, msg in enumerate(conversation_history):
-            if msg["role"] == "system" and "Current Project Structure:" in msg["content"]:
-                conversation_history[i] = {"role": "system", "content": system_prompt}
-                break  # Only replace the first occurrence
-        # If no system prompt was found to replace, append it
-        else:
-            conversation_history.insert(0, {"role": "system", "content": system_prompt})
 
         console.print(f"[green]✓[/green] Added folder '[cyan]{directory_path}[/cyan]' to conversation.")
         if added_files:
@@ -481,9 +365,11 @@ def normalize_path(path_str: str) -> str:
     return str(path)
 
 # --------------------------------------------------------------------------------
-# 5. Conversation state - NOW HANDLES PROJECT STRUCTURE UPDATES
+# 5. Conversation state
 # --------------------------------------------------------------------------------
-# (Conversation history is initialized after the function definitions)
+conversation_history = [
+    {"role": "system", "content": system_PROMPT}
+]
 
 # --------------------------------------------------------------------------------
 # 6. OpenAI API interaction with streaming
@@ -503,13 +389,13 @@ def guess_files_in_message(user_message: str) -> List[str]:
     return potential_paths
 
 def stream_openai_response(user_message: str):
-      # --- Clean conversation history, preserving system and file content ---
+    # First, clean up the conversation history while preserving system messages with file content
     system_msgs = [conversation_history[0]]  # Keep initial system prompt
     file_context = []
     user_assistant_pairs = []
     
     for msg in conversation_history[1:]:
-        if msg["role"] == "system" and ("Content of file '" in msg["content"] or "Current Project Structure:" in msg["content"]):
+        if msg["role"] == "system" and "Content of file '" in msg["content"]:
             file_context.append(msg)
         elif msg["role"] in ["user", "assistant"]:
             user_assistant_pairs.append(msg)
@@ -518,12 +404,12 @@ def stream_openai_response(user_message: str):
     if len(user_assistant_pairs) % 2 != 0:
         user_assistant_pairs = user_assistant_pairs[:-1]
 
-    # Rebuild clean history
+    # Rebuild clean history with files preserved
     cleaned_history = system_msgs + file_context
     cleaned_history.extend(user_assistant_pairs)
     cleaned_history.append({"role": "user", "content": user_message})
-
-    # Replace conversation_history
+    
+    # Replace conversation_history with cleaned version
     conversation_history.clear()
     conversation_history.extend(cleaned_history)
 
@@ -647,7 +533,6 @@ def main():
         "  • '[bold magenta]/add path/to/file[/bold magenta]' for a single file\n"
         "  • '[bold magenta]/add path/to/folder[/bold magenta]' for all files in a folder\n"
         "  • You can add multiple files one by one using /add for each file\n"
-        "Use '[bold magenta]/scan[/bold magenta]' to add all files in the current directory.\n"
         "Type '[bold red]exit[/bold red]' or '[bold red]quit[/bold red]' to end.\n"
     )
 
@@ -664,9 +549,6 @@ def main():
         if user_input.lower() in ["exit", "quit"]:
             console.print("[yellow]Goodbye![/yellow]")
             break
-        # --- Handle /scan BEFORE /add ---
-        if try_handle_scan_command(user_input):
-            continue
 
         if try_handle_add_command(user_input):
             continue
