@@ -20,7 +20,9 @@ from prompt_toolkit.styles import Style as PromptStyle
 console = Console()
 prompt_session = PromptSession(
     style=PromptStyle.from_dict({
-        'prompt': '#00aa00 bold',  # Green prompt
+        'prompt': '#0066ff bold',  # Bright blue prompt
+        'completion-menu.completion': 'bg:#1e3a8a fg:#ffffff',
+        'completion-menu.completion.current': 'bg:#3b82f6 fg:#ffffff bold',
     })
 )
 
@@ -45,10 +47,119 @@ class FileToEdit(BaseModel):
     original_snippet: str
     new_snippet: str
 
-class AssistantResponse(BaseModel):
-    assistant_reply: str
-    files_to_create: Optional[List[FileToCreate]] = None
-    files_to_edit: Optional[List[FileToEdit]] = None
+# Remove AssistantResponse as we're using function calling now
+
+# --------------------------------------------------------------------------------
+# 2.1. Define Function Calling Tools
+# --------------------------------------------------------------------------------
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read the content of a single file from the filesystem",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "The path to the file to read (relative or absolute)",
+                    }
+                },
+                "required": ["file_path"]
+            },
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_multiple_files",
+            "description": "Read the content of multiple files from the filesystem",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Array of file paths to read (relative or absolute)",
+                    }
+                },
+                "required": ["file_paths"]
+            },
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_file",
+            "description": "Create a new file or overwrite an existing file with the provided content",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "The path where the file should be created",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The content to write to the file",
+                    }
+                },
+                "required": ["file_path", "content"]
+            },
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_multiple_files",
+            "description": "Create multiple files at once",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "files": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "content": {"type": "string"}
+                            },
+                            "required": ["path", "content"]
+                        },
+                        "description": "Array of files to create with their paths and content",
+                    }
+                },
+                "required": ["files"]
+            },
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_file",
+            "description": "Edit an existing file by replacing a specific snippet with new content",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file_path": {
+                        "type": "string",
+                        "description": "The path to the file to edit",
+                    },
+                    "original_snippet": {
+                        "type": "string",
+                        "description": "The exact text snippet to find and replace",
+                    },
+                    "new_snippet": {
+                        "type": "string",
+                        "description": "The new text to replace the original snippet with",
+                    }
+                },
+                "required": ["file_path", "original_snippet", "new_snippet"]
+            },
+        }
+    }
+]
 
 # --------------------------------------------------------------------------------
 # 3. system prompt
@@ -65,54 +176,26 @@ system_PROMPT = dedent("""\
        - Suggest optimizations and best practices
        - Debug issues with precision
 
-    2. File Operations:
-       a) Read existing files
-          - Access user-provided file contents for context
-          - Analyze multiple files to understand project structure
-       
-       b) Create new files
-          - Generate complete new files with proper structure
-          - Create complementary files (tests, configs, etc.)
-       
-       c) Edit existing files
-          - Make precise changes using diff-based editing
-          - Modify specific sections while preserving context
-          - Suggest refactoring improvements
-
-    Output Format:
-    You must provide responses in this JSON structure:
-    {
-      "assistant_reply": "Your main explanation or response",
-      "files_to_create": [
-        {
-          "path": "path/to/new/file",
-          "content": "complete file content"
-        }
-      ],
-      "files_to_edit": [
-        {
-          "path": "path/to/existing/file",
-          "original_snippet": "exact code to be replaced",
-          "new_snippet": "new code to insert"
-        }
-      ]
-    }
+    2. File Operations (via function calls):
+       - read_file: Read a single file's content
+       - read_multiple_files: Read multiple files at once
+       - create_file: Create or overwrite a single file
+       - create_multiple_files: Create multiple files at once
+       - edit_file: Make precise edits to existing files using snippet replacement
 
     Guidelines:
-    1. YOU ONLY RETURN JSON, NO OTHER TEXT OR EXPLANATION OUTSIDE THE JSON!!!
-    2. For normal responses, use 'assistant_reply'
-    3. When creating files, include full content in 'files_to_create'
-    4. For editing files:
-       - Use 'files_to_edit' for precise changes
-       - Include enough context in original_snippet to locate the change
-       - Ensure new_snippet maintains proper indentation
-       - Prefer targeted edits over full file replacements
-    5. Always explain your changes and reasoning
-    6. Consider edge cases and potential impacts
-    7. Follow language-specific best practices
-    8. Suggest tests or validation steps when appropriate
+    1. Provide natural, conversational responses explaining your reasoning
+    2. Use function calls when you need to read or modify files
+    3. For file operations:
+       - Always read files first before editing them to understand the context
+       - Use precise snippet matching for edits
+       - Explain what changes you're making and why
+       - Consider the impact of changes on the overall codebase
+    4. Follow language-specific best practices
+    5. Suggest tests or validation steps when appropriate
+    6. Be thorough in your analysis and recommendations
 
-    Remember: You're a senior engineer - be thorough, precise, and thoughtful in your solutions.
+    Remember: You're a senior engineer - be thoughtful, precise, and explain your reasoning clearly.
 """)
 
 # --------------------------------------------------------------------------------
@@ -140,7 +223,7 @@ def create_file(path: str, content: str):
     file_path.parent.mkdir(parents=True, exist_ok=True)
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(content)
-    console.print(f"[green]✓[/green] Created/updated file at '[cyan]{file_path}[/cyan]'")
+    console.print(f"[bold blue]✓[/bold blue] Created/updated file at '[bright_cyan]{file_path}[/bright_cyan]'")
     
     # Record the action as a system message
     conversation_history.append({
@@ -158,10 +241,10 @@ def show_diff_table(files_to_edit: List[FileToEdit]) -> None:
     if not files_to_edit:
         return
     
-    table = Table(title="Proposed Edits", show_header=True, header_style="bold magenta", show_lines=True)
-    table.add_column("File Path", style="cyan")
-    table.add_column("Original", style="red")
-    table.add_column("New", style="green")
+    table = Table(title="📝 Proposed Edits", show_header=True, header_style="bold bright_blue", show_lines=True, border_style="blue")
+    table.add_column("File Path", style="bright_cyan", no_wrap=True)
+    table.add_column("Original", style="red dim")
+    table.add_column("New", style="bright_green")
 
     for edit in files_to_edit:
         table.add_row(edit.path, edit.original_snippet, edit.new_snippet)
@@ -178,26 +261,26 @@ def apply_diff_edit(path: str, original_snippet: str, new_snippet: str):
         if occurrences == 0:
             raise ValueError("Original snippet not found")
         if occurrences > 1:
-            console.print(f"[yellow]Multiple matches ({occurrences}) found - requiring line numbers for safety", style="yellow")
-            console.print("Use format:\n--- original.py (lines X-Y)\n+++ modified.py\n")
+            console.print(f"[bold yellow]⚠ Multiple matches ({occurrences}) found - requiring line numbers for safety[/bold yellow]")
+            console.print("[dim]Use format:\n--- original.py (lines X-Y)\n+++ modified.py[/dim]")
             raise ValueError(f"Ambiguous edit: {occurrences} matches")
         
         updated_content = content.replace(original_snippet, new_snippet, 1)
         create_file(path, updated_content)
-        console.print(f"[green]✓[/green] Applied diff edit to '[cyan]{path}[/cyan]'")
+        console.print(f"[bold blue]✓[/bold blue] Applied diff edit to '[bright_cyan]{path}[/bright_cyan]'")
         # Record the edit as a system message
         conversation_history.append({
             "role": "system",
             "content": f"File operation: Applied diff edit to '{path}'"
         })
     except FileNotFoundError:
-        console.print(f"[red]✗[/red] File not found for diff editing: '[cyan]{path}[/cyan]'", style="red")
+        console.print(f"[bold red]✗[/bold red] File not found for diff editing: '[bright_cyan]{path}[/bright_cyan]'")
     except ValueError as e:
-        console.print(f"[yellow]⚠[/yellow] {str(e)} in '[cyan]{path}[/cyan]'. No changes made.", style="yellow")
-        console.print("\nExpected snippet:", style="yellow")
-        console.print(Panel(original_snippet, title="Expected", border_style="yellow"))
-        console.print("\nActual file content:", style="yellow")
-        console.print(Panel(content, title="Actual", border_style="yellow"))
+        console.print(f"[bold yellow]⚠[/bold yellow] {str(e)} in '[bright_cyan]{path}[/bright_cyan]'. No changes made.")
+        console.print("\n[bold blue]Expected snippet:[/bold blue]")
+        console.print(Panel(original_snippet, title="Expected", border_style="blue", title_align="left"))
+        console.print("\n[bold blue]Actual file content:[/bold blue]")
+        console.print(Panel(content, title="Actual", border_style="yellow", title_align="left"))
 
 def try_handle_add_command(user_input: str) -> bool:
     prefix = "/add "
@@ -215,14 +298,14 @@ def try_handle_add_command(user_input: str) -> bool:
                     "role": "system",
                     "content": f"Content of file '{normalized_path}':\n\n{content}"
                 })
-                console.print(f"[green]✓[/green] Added file '[cyan]{normalized_path}[/cyan]' to conversation.\n")
+                console.print(f"[bold blue]✓[/bold blue] Added file '[bright_cyan]{normalized_path}[/bright_cyan]' to conversation.\n")
         except OSError as e:
-            console.print(f"[red]✗[/red] Could not add path '[cyan]{path_to_add}[/cyan]': {e}\n", style="red")
+            console.print(f"[bold red]✗[/bold red] Could not add path '[bright_cyan]{path_to_add}[/bright_cyan]': {e}\n")
         return True
     return False
 
 def add_directory_to_conversation(directory_path: str):
-    with console.status("[bold green]Scanning directory...") as status:
+    with console.status("[bold bright_blue]🔍 Scanning directory...[/bold bright_blue]") as status:
         excluded_files = {
             # Python specific
             ".DS_Store", "Thumbs.db", ".gitignore", ".python-version",
@@ -271,10 +354,10 @@ def add_directory_to_conversation(directory_path: str):
 
         for root, dirs, files in os.walk(directory_path):
             if total_files_processed >= max_files:
-                console.print(f"[yellow]⚠[/yellow] Reached maximum file limit ({max_files})")
+                console.print(f"[bold yellow]⚠[/bold yellow] Reached maximum file limit ({max_files})")
                 break
 
-            status.update(f"[bold green]Scanning {root}...")
+            status.update(f"[bold bright_blue]🔍 Scanning {root}...[/bold bright_blue]")
             # Skip hidden directories and excluded directories
             dirs[:] = [d for d in dirs if not d.startswith('.') and d not in excluded_files]
 
@@ -316,15 +399,17 @@ def add_directory_to_conversation(directory_path: str):
                 except OSError:
                     skipped_files.append(full_path)
 
-        console.print(f"[green]✓[/green] Added folder '[cyan]{directory_path}[/cyan]' to conversation.")
+        console.print(f"[bold blue]✓[/bold blue] Added folder '[bright_cyan]{directory_path}[/bright_cyan]' to conversation.")
         if added_files:
-            console.print(f"\n[bold]Added files:[/bold] ({len(added_files)} of {total_files_processed})")
+            console.print(f"\n[bold bright_blue]📁 Added files:[/bold bright_blue] [dim]({len(added_files)} of {total_files_processed})[/dim]")
             for f in added_files:
-                console.print(f"[cyan]{f}[/cyan]")
+                console.print(f"  [bright_cyan]📄 {f}[/bright_cyan]")
         if skipped_files:
-            console.print(f"\n[yellow]Skipped files:[/yellow] ({len(skipped_files)})")
-            for f in skipped_files:
-                console.print(f"[yellow]{f}[/yellow]")
+            console.print(f"\n[bold yellow]⏭ Skipped files:[/bold yellow] [dim]({len(skipped_files)})[/dim]")
+            for f in skipped_files[:10]:  # Show only first 10 to avoid clutter
+                console.print(f"  [yellow dim]⚠ {f}[/yellow dim]")
+            if len(skipped_files) > 10:
+                console.print(f"  [dim]... and {len(skipped_files) - 10} more[/dim]")
         console.print()
 
 def is_binary_file(file_path: str, peek_size: int = 1024) -> bool:
@@ -351,7 +436,7 @@ def ensure_file_in_context(file_path: str) -> bool:
             })
         return True
     except OSError:
-        console.print(f"[red]✗[/red] Could not read file '[cyan]{file_path}[/cyan]' for editing context", style="red")
+        console.print(f"[bold red]✗[/bold red] Could not read file '[bright_cyan]{file_path}[/bright_cyan]' for editing context")
         return False
 
 def normalize_path(path_str: str) -> str:
@@ -375,18 +460,117 @@ conversation_history = [
 # 6. OpenAI API interaction with streaming
 # --------------------------------------------------------------------------------
 
-def guess_files_in_message(user_message: str) -> List[str]:
-    recognized_extensions = [".css", ".html", ".js", ".py", ".json", ".md"]
-    potential_paths = []
-    for word in user_message.split():
-        if any(ext in word for ext in recognized_extensions) or "/" in word:
-            path = word.strip("',\"")
-            try:
-                normalized_path = normalize_path(path)
-                potential_paths.append(normalized_path)
-            except (OSError, ValueError):
-                continue
-    return potential_paths
+def execute_function_call_dict(tool_call_dict) -> str:
+    """Execute a function call from a dictionary format and return the result as a string."""
+    try:
+        function_name = tool_call_dict["function"]["name"]
+        arguments = json.loads(tool_call_dict["function"]["arguments"])
+        
+        if function_name == "read_file":
+            file_path = arguments["file_path"]
+            normalized_path = normalize_path(file_path)
+            content = read_local_file(normalized_path)
+            return f"Content of file '{normalized_path}':\n\n{content}"
+            
+        elif function_name == "read_multiple_files":
+            file_paths = arguments["file_paths"]
+            results = []
+            for file_path in file_paths:
+                try:
+                    normalized_path = normalize_path(file_path)
+                    content = read_local_file(normalized_path)
+                    results.append(f"Content of file '{normalized_path}':\n\n{content}")
+                except OSError as e:
+                    results.append(f"Error reading '{file_path}': {e}")
+            return "\n\n" + "="*50 + "\n\n".join(results)
+            
+        elif function_name == "create_file":
+            file_path = arguments["file_path"]
+            content = arguments["content"]
+            create_file(file_path, content)
+            return f"Successfully created file '{file_path}'"
+            
+        elif function_name == "create_multiple_files":
+            files = arguments["files"]
+            created_files = []
+            for file_info in files:
+                create_file(file_info["path"], file_info["content"])
+                created_files.append(file_info["path"])
+            return f"Successfully created {len(created_files)} files: {', '.join(created_files)}"
+            
+        elif function_name == "edit_file":
+            file_path = arguments["file_path"]
+            original_snippet = arguments["original_snippet"]
+            new_snippet = arguments["new_snippet"]
+            
+            # Ensure file is in context first
+            if not ensure_file_in_context(file_path):
+                return f"Error: Could not read file '{file_path}' for editing"
+            
+            apply_diff_edit(file_path, original_snippet, new_snippet)
+            return f"Successfully edited file '{file_path}'"
+            
+        else:
+            return f"Unknown function: {function_name}"
+            
+    except Exception as e:
+        return f"Error executing {function_name}: {str(e)}"
+
+def execute_function_call(tool_call) -> str:
+    """Execute a function call and return the result as a string."""
+    try:
+        function_name = tool_call.function.name
+        arguments = json.loads(tool_call.function.arguments)
+        
+        if function_name == "read_file":
+            file_path = arguments["file_path"]
+            normalized_path = normalize_path(file_path)
+            content = read_local_file(normalized_path)
+            return f"Content of file '{normalized_path}':\n\n{content}"
+            
+        elif function_name == "read_multiple_files":
+            file_paths = arguments["file_paths"]
+            results = []
+            for file_path in file_paths:
+                try:
+                    normalized_path = normalize_path(file_path)
+                    content = read_local_file(normalized_path)
+                    results.append(f"Content of file '{normalized_path}':\n\n{content}")
+                except OSError as e:
+                    results.append(f"Error reading '{file_path}': {e}")
+            return "\n\n" + "="*50 + "\n\n".join(results)
+            
+        elif function_name == "create_file":
+            file_path = arguments["file_path"]
+            content = arguments["content"]
+            create_file(file_path, content)
+            return f"Successfully created file '{file_path}'"
+            
+        elif function_name == "create_multiple_files":
+            files = arguments["files"]
+            created_files = []
+            for file_info in files:
+                create_file(file_info["path"], file_info["content"])
+                created_files.append(file_info["path"])
+            return f"Successfully created {len(created_files)} files: {', '.join(created_files)}"
+            
+        elif function_name == "edit_file":
+            file_path = arguments["file_path"]
+            original_snippet = arguments["original_snippet"]
+            new_snippet = arguments["new_snippet"]
+            
+            # Ensure file is in context first
+            if not ensure_file_in_context(file_path):
+                return f"Error: Could not read file '{file_path}' for editing"
+            
+            apply_diff_edit(file_path, original_snippet, new_snippet)
+            return f"Successfully edited file '{file_path}'"
+            
+        else:
+            return f"Unknown function: {function_name}"
+            
+    except Exception as e:
+        return f"Error executing {function_name}: {str(e)}"
 
 def stream_openai_response(user_message: str):
     # First, clean up the conversation history while preserving system messages with file content
@@ -397,114 +581,171 @@ def stream_openai_response(user_message: str):
     for msg in conversation_history[1:]:
         if msg["role"] == "system" and "Content of file '" in msg["content"]:
             file_context.append(msg)
-        elif msg["role"] in ["user", "assistant"]:
+        elif msg["role"] in ["user", "assistant", "tool"]:
             user_assistant_pairs.append(msg)
     
-    # Only keep complete user-assistant pairs
-    if len(user_assistant_pairs) % 2 != 0:
-        user_assistant_pairs = user_assistant_pairs[:-1]
+    # Only keep complete user-assistant pairs (but preserve tool messages)
+    cleaned_pairs = []
+    i = 0
+    while i < len(user_assistant_pairs):
+        if user_assistant_pairs[i]["role"] == "user":
+            cleaned_pairs.append(user_assistant_pairs[i])
+            # Look for corresponding assistant response
+            if i + 1 < len(user_assistant_pairs) and user_assistant_pairs[i + 1]["role"] == "assistant":
+                cleaned_pairs.append(user_assistant_pairs[i + 1])
+                i += 2
+                # Add any tool messages that follow
+                while i < len(user_assistant_pairs) and user_assistant_pairs[i]["role"] == "tool":
+                    cleaned_pairs.append(user_assistant_pairs[i])
+                    i += 1
+            else:
+                i += 1
+        else:
+            i += 1
 
     # Rebuild clean history with files preserved
-    cleaned_history = system_msgs + file_context
-    cleaned_history.extend(user_assistant_pairs)
+    cleaned_history = system_msgs + file_context + cleaned_pairs
     cleaned_history.append({"role": "user", "content": user_message})
     
     # Replace conversation_history with cleaned version
     conversation_history.clear()
     conversation_history.extend(cleaned_history)
 
-    potential_paths = guess_files_in_message(user_message)
-    valid_files = {}
-
-    for path in potential_paths:
-        try:
-            content = read_local_file(path)
-            valid_files[path] = content
-            file_marker = f"Content of file '{path}'"
-            if not any(file_marker in msg["content"] for msg in conversation_history):
-                conversation_history.append({
-                    "role": "system",
-                    "content": f"{file_marker}:\n\n{content}"
-                })
-        except OSError:
-            error_msg = f"Cannot proceed: File '{path}' does not exist or is not accessible"
-            console.print(f"[red]✗[/red] {error_msg}", style="red")
-            continue
-
+    # Remove the old file guessing logic since we'll use function calls
     try:
         stream = client.chat.completions.create(
             model="deepseek-reasoner",
             messages=conversation_history,
-            max_completion_tokens=8000,
+            tools=tools,
+            max_completion_tokens=64000,
             stream=True
         )
 
-        console.print("\nThinking...", style="bold yellow")
+        console.print("\n[bold bright_blue]🤔 Thinking...[/bold bright_blue]")
         reasoning_started = False
         reasoning_content = ""
         final_content = ""
+        tool_calls = []
 
         for chunk in stream:
-            if chunk.choices[0].delta.reasoning_content:
+            # Handle reasoning content if available
+            if hasattr(chunk.choices[0].delta, 'reasoning_content') and chunk.choices[0].delta.reasoning_content:
                 if not reasoning_started:
-                    console.print("\nReasoning:", style="bold yellow")
+                    console.print("\n[bold blue]💭 Reasoning:[/bold blue]")
                     reasoning_started = True
                 console.print(chunk.choices[0].delta.reasoning_content, end="")
                 reasoning_content += chunk.choices[0].delta.reasoning_content
             elif chunk.choices[0].delta.content:
                 if reasoning_started:
                     console.print("\n")  # Add spacing after reasoning
-                    console.print("\nAssistant> ", style="bold blue", end="")
-                    reasoning_started = False  # Reset so we don't add extra spacing
+                    console.print("\n[bold bright_blue]🤖 Assistant>[/bold bright_blue] ", end="")
+                    reasoning_started = False
                 final_content += chunk.choices[0].delta.content
                 console.print(chunk.choices[0].delta.content, end="")
+            elif chunk.choices[0].delta.tool_calls:
+                # Handle tool calls
+                for tool_call_delta in chunk.choices[0].delta.tool_calls:
+                    if tool_call_delta.index is not None:
+                        # Ensure we have enough tool_calls
+                        while len(tool_calls) <= tool_call_delta.index:
+                            tool_calls.append({
+                                "id": "",
+                                "type": "function",
+                                "function": {"name": "", "arguments": ""}
+                            })
+                        
+                        if tool_call_delta.id:
+                            tool_calls[tool_call_delta.index]["id"] = tool_call_delta.id
+                        if tool_call_delta.function:
+                            if tool_call_delta.function.name:
+                                tool_calls[tool_call_delta.index]["function"]["name"] += tool_call_delta.function.name
+                            if tool_call_delta.function.arguments:
+                                tool_calls[tool_call_delta.index]["function"]["arguments"] += tool_call_delta.function.arguments
 
         console.print()  # New line after streaming
 
-        try:
-            parsed_response = json.loads(final_content)
+        # Store the assistant's response in conversation history
+        assistant_message = {
+            "role": "assistant",
+            "content": final_content if final_content else None
+        }
+        
+        if tool_calls:
+            # Convert our tool_calls format to the expected format
+            formatted_tool_calls = []
+            for tc in tool_calls:
+                if tc["function"]["name"]:  # Only add if we have a function name
+                    formatted_tool_calls.append({
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["function"]["name"],
+                            "arguments": tc["function"]["arguments"]
+                        }
+                    })
             
-            if "assistant_reply" not in parsed_response:
-                parsed_response["assistant_reply"] = ""
+            if formatted_tool_calls:
+                assistant_message["tool_calls"] = formatted_tool_calls
+                conversation_history.append(assistant_message)
+                
+                # Execute tool calls
+                console.print(f"\n[bold bright_cyan]⚡ Executing {len(formatted_tool_calls)} function call(s)...[/bold bright_cyan]")
+                for tool_call in formatted_tool_calls:
+                    console.print(f"[bright_blue]→ {tool_call['function']['name']}[/bright_blue]")
+                    result = execute_function_call_dict(tool_call)
+                    
+                    # Add tool result to conversation
+                    conversation_history.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call["id"],
+                        "content": result
+                    })
+                
+                # Get follow-up response after tool execution
+                console.print("\n[bold bright_blue]🔄 Processing results...[/bold bright_blue]")
+                follow_up_stream = client.chat.completions.create(
+                    model="deepseek-reasoner",
+                    messages=conversation_history,
+                    tools=tools,
+                    max_completion_tokens=64000,
+                    stream=True
+                )
+                
+                follow_up_content = ""
+                reasoning_started = False
+                
+                for chunk in follow_up_stream:
+                    # Handle reasoning content if available
+                    if hasattr(chunk.choices[0].delta, 'reasoning_content') and chunk.choices[0].delta.reasoning_content:
+                        if not reasoning_started:
+                            console.print("\n[bold blue]💭 Reasoning:[/bold blue]")
+                            reasoning_started = True
+                        console.print(chunk.choices[0].delta.reasoning_content, end="")
+                    elif chunk.choices[0].delta.content:
+                        if reasoning_started:
+                            console.print("\n")
+                            console.print("\n[bold bright_blue]🤖 Assistant>[/bold bright_blue] ", end="")
+                            reasoning_started = False
+                        follow_up_content += chunk.choices[0].delta.content
+                        console.print(chunk.choices[0].delta.content, end="")
+                
+                console.print()
+                
+                # Store follow-up response
+                conversation_history.append({
+                    "role": "assistant",
+                    "content": follow_up_content
+                })
+        else:
+            # No tool calls, just store the regular response
+            conversation_history.append(assistant_message)
 
-            if "files_to_edit" in parsed_response and parsed_response["files_to_edit"]:
-                new_files_to_edit = []
-                for edit in parsed_response["files_to_edit"]:
-                    try:
-                        edit_abs_path = normalize_path(edit["path"])
-                        if edit_abs_path in valid_files or ensure_file_in_context(edit_abs_path):
-                            edit["path"] = edit_abs_path
-                            new_files_to_edit.append(edit)
-                    except (OSError, ValueError):
-                        console.print(f"[yellow]⚠[/yellow] Skipping invalid path: '{edit['path']}'", style="yellow")
-                        continue
-                parsed_response["files_to_edit"] = new_files_to_edit
-
-            response_obj = AssistantResponse(**parsed_response)
-
-            # Store the complete JSON response in conversation history
-            conversation_history.append({
-                "role": "assistant",
-                "content": final_content  # Store the full JSON response string
-            })
-
-            return response_obj
-
-        except json.JSONDecodeError:
-            error_msg = "Failed to parse JSON response from assistant"
-            console.print(f"[red]✗[/red] {error_msg}", style="red")
-            return AssistantResponse(
-                assistant_reply=error_msg,
-                files_to_create=[]
-            )
+        return {"success": True}
 
     except Exception as e:
         error_msg = f"DeepSeek API error: {str(e)}"
-        console.print(f"\n[red]✗[/red] {error_msg}", style="red")
-        return AssistantResponse(
-            assistant_reply=error_msg,
-            files_to_create=[]
-        )
+        console.print(f"\n[bold red]❌ {error_msg}[/bold red]")
+        return {"error": error_msg}
 
 def trim_conversation_history():
     """Trim conversation history to prevent token limit issues"""
@@ -524,53 +765,60 @@ def trim_conversation_history():
 # --------------------------------------------------------------------------------
 
 def main():
+    # Create a beautiful gradient-style welcome panel
+    welcome_text = """[bold bright_blue]🚀 DeepSeek Engineer[/bold bright_blue] [bright_cyan]with Function Calling[/bright_cyan]
+[dim blue]Powered by DeepSeek-R1 with Chain-of-Thought Reasoning[/dim blue]"""
+    
     console.print(Panel.fit(
-        "[bold blue]Welcome to Deep Seek Engineer with Structured Output[/bold blue] [green](and CoT reasoning)[/green]!🐋",
-        border_style="blue"
+        welcome_text,
+        border_style="bright_blue",
+        padding=(1, 2),
+        title="[bold bright_cyan]🤖 AI Code Assistant[/bold bright_cyan]",
+        title_align="center"
     ))
-    console.print(
-        "Use '[bold magenta]/add[/bold magenta]' to include files in the conversation:\n"
-        "  • '[bold magenta]/add path/to/file[/bold magenta]' for a single file\n"
-        "  • '[bold magenta]/add path/to/folder[/bold magenta]' for all files in a folder\n"
-        "  • You can add multiple files one by one using /add for each file\n"
-        "Type '[bold red]exit[/bold red]' or '[bold red]quit[/bold red]' to end.\n"
-    )
+    
+    # Create an elegant instruction panel
+    instructions = """[bold bright_blue]📁 File Operations:[/bold bright_blue]
+  • [bright_cyan]/add path/to/file[/bright_cyan] - Include a single file in conversation
+  • [bright_cyan]/add path/to/folder[/bright_cyan] - Include all files in a folder
+  • [dim]The AI can automatically read and create files using function calls[/dim]
+
+[bold bright_blue]🎯 Commands:[/bold bright_blue]
+  • [bright_cyan]exit[/bright_cyan] or [bright_cyan]quit[/bright_cyan] - End the session
+  • Just ask naturally - the AI will handle file operations automatically!"""
+    
+    console.print(Panel(
+        instructions,
+        border_style="blue",
+        padding=(1, 2),
+        title="[bold blue]💡 How to Use[/bold blue]",
+        title_align="left"
+    ))
+    console.print()
 
     while True:
         try:
-            user_input = prompt_session.prompt("You> ").strip()
+            user_input = prompt_session.prompt("🔵 You> ").strip()
         except (EOFError, KeyboardInterrupt):
-            console.print("\n[yellow]Exiting.[/yellow]")
+            console.print("\n[bold yellow]👋 Exiting gracefully...[/bold yellow]")
             break
 
         if not user_input:
             continue
 
         if user_input.lower() in ["exit", "quit"]:
-            console.print("[yellow]Goodbye![/yellow]")
+            console.print("[bold bright_blue]👋 Goodbye! Happy coding![/bold bright_blue]")
             break
 
         if try_handle_add_command(user_input):
             continue
 
         response_data = stream_openai_response(user_input)
+        
+        if response_data.get("error"):
+            console.print(f"[bold red]❌ Error: {response_data['error']}[/bold red]")
 
-        if response_data.files_to_create:
-            for file_info in response_data.files_to_create:
-                create_file(file_info.path, file_info.content)
-
-        if response_data.files_to_edit:
-            show_diff_table(response_data.files_to_edit)
-            confirm = prompt_session.prompt(
-                "Do you want to apply these changes? (y/n): "
-            ).strip().lower()
-            if confirm == 'y':
-                for edit_info in response_data.files_to_edit:
-                    apply_diff_edit(edit_info.path, edit_info.original_snippet, edit_info.new_snippet)
-            else:
-                console.print("[yellow]ℹ[/yellow] Skipped applying diff edits.", style="yellow")
-
-    console.print("[blue]Session finished.[/blue]")
+    console.print("[bold blue]✨ Session finished. Thank you for using DeepSeek Engineer![/bold blue]")
 
 if __name__ == "__main__":
     main()
