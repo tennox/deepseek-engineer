@@ -744,7 +744,7 @@ def stream_openai_response(user_message: str):
 
 def main():
     # Create a beautiful gradient-style welcome panel
-    welcome_text = """[bold bright_blue]🚀 DeepSeek Engineer[/bold bright_blue] [bright_cyan]with Function Calling[/bright_cyan]
+    welcome_text = """[bold bright_blue]🐋 DeepSeek Engineer[/bold bright_blue] [bright_cyan]with Function Calling[/bright_cyan]
 [dim blue]Powered by DeepSeek-R1 with Chain-of-Thought Reasoning[/dim blue]"""
     
     console.print(Panel.fit(
