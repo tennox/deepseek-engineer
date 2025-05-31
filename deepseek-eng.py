@@ -15,6 +15,7 @@ from rich.panel import Panel
 from rich.style import Style
 from prompt_toolkit import PromptSession
 from prompt_toolkit.styles import Style as PromptStyle
+import time
 
 # Initialize Rich console and prompt session
 console = Console()
@@ -195,6 +196,8 @@ system_PROMPT = dedent("""\
     5. Suggest tests or validation steps when appropriate
     6. Be thorough in your analysis and recommendations
 
+    IMPORTANT: In your thinking process, if you realize that something requires a tool call, cut your thinking short and proceed directly to the tool call. Don't overthink - act efficiently when file operations are needed.
+
     Remember: You're a senior engineer - be thoughtful, precise, and explain your reasoning clearly.
 """)
 
@@ -224,18 +227,6 @@ def create_file(path: str, content: str):
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(content)
     console.print(f"[bold blue]✓[/bold blue] Created/updated file at '[bright_cyan]{file_path}[/bright_cyan]'")
-    
-    # Record the action as a system message
-    conversation_history.append({
-        "role": "system",
-        "content": f"File operation: Created/updated file at '{file_path}'"
-    })
-    
-    normalized_path = normalize_path(str(file_path))
-    conversation_history.append({
-        "role": "system",
-        "content": f"Content of file '{normalized_path}':\n\n{content}"
-    })
 
 def show_diff_table(files_to_edit: List[FileToEdit]) -> None:
     if not files_to_edit:
@@ -268,11 +259,7 @@ def apply_diff_edit(path: str, original_snippet: str, new_snippet: str):
         updated_content = content.replace(original_snippet, new_snippet, 1)
         create_file(path, updated_content)
         console.print(f"[bold blue]✓[/bold blue] Applied diff edit to '[bright_cyan]{path}[/bright_cyan]'")
-        # Record the edit as a system message
-        conversation_history.append({
-            "role": "system",
-            "content": f"File operation: Applied diff edit to '{path}'"
-        })
+
     except FileNotFoundError:
         console.print(f"[bold red]✗[/bold red] File not found for diff editing: '[bright_cyan]{path}[/bright_cyan]'")
     except ValueError as e:
@@ -572,44 +559,29 @@ def execute_function_call(tool_call) -> str:
     except Exception as e:
         return f"Error executing {function_name}: {str(e)}"
 
-def stream_openai_response(user_message: str):
-    # First, clean up the conversation history while preserving system messages with file content
-    system_msgs = [conversation_history[0]]  # Keep initial system prompt
-    file_context = []
-    user_assistant_pairs = []
+def trim_conversation_history():
+    """Trim conversation history to prevent token limit issues while preserving tool call sequences"""
+    if len(conversation_history) <= 20:  # Don't trim if conversation is still small
+        return
+        
+    # Always keep the system prompt
+    system_msgs = [msg for msg in conversation_history if msg["role"] == "system"]
+    other_msgs = [msg for msg in conversation_history if msg["role"] != "system"]
     
-    for msg in conversation_history[1:]:
-        if msg["role"] == "system" and "Content of file '" in msg["content"]:
-            file_context.append(msg)
-        elif msg["role"] in ["user", "assistant", "tool"]:
-            user_assistant_pairs.append(msg)
+    # Keep only the last 15 messages to prevent token overflow
+    if len(other_msgs) > 15:
+        other_msgs = other_msgs[-15:]
     
-    # Only keep complete user-assistant pairs (but preserve tool messages)
-    cleaned_pairs = []
-    i = 0
-    while i < len(user_assistant_pairs):
-        if user_assistant_pairs[i]["role"] == "user":
-            cleaned_pairs.append(user_assistant_pairs[i])
-            # Look for corresponding assistant response
-            if i + 1 < len(user_assistant_pairs) and user_assistant_pairs[i + 1]["role"] == "assistant":
-                cleaned_pairs.append(user_assistant_pairs[i + 1])
-                i += 2
-                # Add any tool messages that follow
-                while i < len(user_assistant_pairs) and user_assistant_pairs[i]["role"] == "tool":
-                    cleaned_pairs.append(user_assistant_pairs[i])
-                    i += 1
-            else:
-                i += 1
-        else:
-            i += 1
-
-    # Rebuild clean history with files preserved
-    cleaned_history = system_msgs + file_context + cleaned_pairs
-    cleaned_history.append({"role": "user", "content": user_message})
-    
-    # Replace conversation_history with cleaned version
+    # Rebuild conversation history
     conversation_history.clear()
-    conversation_history.extend(cleaned_history)
+    conversation_history.extend(system_msgs + other_msgs)
+
+def stream_openai_response(user_message: str):
+    # Add the user message to conversation history
+    conversation_history.append({"role": "user", "content": user_message})
+    
+    # Trim conversation history if it's getting too long
+    trim_conversation_history()
 
     # Remove the old file guessing logic since we'll use function calls
     try:
@@ -621,7 +593,7 @@ def stream_openai_response(user_message: str):
             stream=True
         )
 
-        console.print("\n[bold bright_blue]🤔 Thinking...[/bold bright_blue]")
+        console.print("\n[bold bright_blue]🐋 Seeking...[/bold bright_blue]")
         reasoning_started = False
         reasoning_content = ""
         final_content = ""
@@ -673,10 +645,13 @@ def stream_openai_response(user_message: str):
         if tool_calls:
             # Convert our tool_calls format to the expected format
             formatted_tool_calls = []
-            for tc in tool_calls:
+            for i, tc in enumerate(tool_calls):
                 if tc["function"]["name"]:  # Only add if we have a function name
+                    # Ensure we have a valid tool call ID
+                    tool_id = tc["id"] if tc["id"] else f"call_{i}_{int(time.time() * 1000)}"
+                    
                     formatted_tool_calls.append({
-                        "id": tc["id"],
+                        "id": tool_id,
                         "type": "function",
                         "function": {
                             "name": tc["function"]["name"],
@@ -685,24 +660,40 @@ def stream_openai_response(user_message: str):
                     })
             
             if formatted_tool_calls:
+                # Important: When there are tool calls, content should be None or empty
+                if not final_content:
+                    assistant_message["content"] = None
+                    
                 assistant_message["tool_calls"] = formatted_tool_calls
                 conversation_history.append(assistant_message)
                 
-                # Execute tool calls
+                # Execute tool calls and add results immediately
                 console.print(f"\n[bold bright_cyan]⚡ Executing {len(formatted_tool_calls)} function call(s)...[/bold bright_cyan]")
                 for tool_call in formatted_tool_calls:
                     console.print(f"[bright_blue]→ {tool_call['function']['name']}[/bright_blue]")
-                    result = execute_function_call_dict(tool_call)
                     
-                    # Add tool result to conversation
-                    conversation_history.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call["id"],
-                        "content": result
-                    })
+                    try:
+                        result = execute_function_call_dict(tool_call)
+                        
+                        # Add tool result to conversation immediately
+                        tool_response = {
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": result
+                        }
+                        conversation_history.append(tool_response)
+                    except Exception as e:
+                        console.print(f"[red]Error executing {tool_call['function']['name']}: {e}[/red]")
+                        # Still need to add a tool response even on error
+                        conversation_history.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": f"Error: {str(e)}"
+                        })
                 
                 # Get follow-up response after tool execution
                 console.print("\n[bold bright_blue]🔄 Processing results...[/bold bright_blue]")
+                
                 follow_up_stream = client.chat.completions.create(
                     model="deepseek-reasoner",
                     messages=conversation_history,
@@ -746,19 +737,6 @@ def stream_openai_response(user_message: str):
         error_msg = f"DeepSeek API error: {str(e)}"
         console.print(f"\n[bold red]❌ {error_msg}[/bold red]")
         return {"error": error_msg}
-
-def trim_conversation_history():
-    """Trim conversation history to prevent token limit issues"""
-    max_pairs = 10  # Adjust based on your needs
-    system_msgs = [msg for msg in conversation_history if msg["role"] == "system"]
-    other_msgs = [msg for msg in conversation_history if msg["role"] != "system"]
-    
-    # Keep only the last max_pairs of user-assistant interactions
-    if len(other_msgs) > max_pairs * 2:
-        other_msgs = other_msgs[-max_pairs * 2:]
-    
-    conversation_history.clear()
-    conversation_history.extend(system_msgs + other_msgs)
 
 # --------------------------------------------------------------------------------
 # 7. Main interactive loop
