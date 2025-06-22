@@ -33,7 +33,7 @@ prompt_session = PromptSession(
 load_dotenv()  # Load environment variables from .env file
 client = OpenAI(
     api_key=os.getenv("DEEPSEEK_API_KEY"),
-    base_url="https://api.deepseek.com"
+    base_url=os.getenv("DEEPSEEK_API_URL")
 )  # Configure for DeepSeek API
 
 # --------------------------------------------------------------------------------
